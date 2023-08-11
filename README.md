@@ -10,11 +10,12 @@ ScriptSentry finds misconfigured and dangerous logon scripts.
 | Done | Multi domain/forest support | Added multi-domain support |
 | Done | Check for misconfigured NETLOGON and SYSVOL share | Added check for unsafe permissions |
 | Done | Add additional mapped drive checks | Added check for mapped drives via New-SmbMapping (pwsh) & .MapNetworkDrive (vbs)|
+| Done | Improved the ASCII art | Because its fun|
+| Done | Improved regex to reduce false positives | Because regex is hard|
 | In progress | Additional regex to search for other dangerous stuff in logon scripts | More detections in the pipeline |
 | ToDo | Write a blog post about this tool/why I made it | |
 | ToDo | Create an official release | |
 | ToDo | Publish to PSGallery | |
-
 
 
 ### Installing & Running
@@ -24,8 +25,11 @@ git clone https://github.com/techspence/ScriptSentry
 Import-Module ScriptSentry.psm1
 Invoke-ScriptSentry
 
-# Run ScriptSentry and save results to a file
+# Run ScriptSentry and save results to a text file
 Invoke-ScriptSentry | Out-File c:\temp\ScriptSentry.txt
+
+# Run ScriptSentry and save results to separate csv files in the current directory
+Invoke-ScriptSentry -SaveOutput $true
 
 # Run the standalone ScriptSentry script
 git clone https://github.com/techspence/ScriptSentry
@@ -49,7 +53,7 @@ Invoke-ScriptSentry
 /\____) || (____/\| ) \ \_____) (___| )         | |   /\____) || (____/\| )  \  |   | |   | ) \ \__   | |
 \_______)(_______/|/   \__/\_______/|/          )_(   \_______)(_______/|/    )_)   )_(   |/   \__/   \_/
                               by: Spencer Alessi @techspence
-                                          v0.2
+                                          v0.3
 
 
 ########## Unsafe UNC folder permissions ##########

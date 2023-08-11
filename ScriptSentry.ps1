@@ -9,17 +9,20 @@ ScriptSentry searches the NETLOGON share to
     3) identify scripts and shares that may have dangerous permissions
 
 .EXAMPLE
-Invoke-ScriptSentry
+.\ScriptSentry.ps1
 
 .EXAMPLE
-Invoke-ScriptSentry | Out-File c:\temp\ScriptSentry.txt
+.\ScriptSentry.ps1 c:\temp\ScriptSentry.txt
 
 .EXAMPLE
-ScriptSentry.ps1
+.\ScriptSentry.ps1 -SaveOutput $true
 
 #>
+
 [CmdletBinding()]
-Param()
+Param(
+    [boolean]$SaveOutput = $false
+)
 
 function Get-Domains {
     [CmdletBinding()]
@@ -76,7 +79,7 @@ function Get-LogonScripts {
         $LogonScripts | ForEach-Object {
             Write-Verbose -Message "$($_.fullName)"
         }
-        $LogonScripts
+        $LogonScripts | Sort-Object -Unique
     }
 }
 function Find-AdminLogonScripts {
@@ -94,17 +97,18 @@ function Find-AdminLogonScripts {
 
         # Create a new ADSI searcher object
         # $searcher = [adsisearcher]$ldapFilter
-        $searcher = New-Object DirectoryServices.DirectorySearcher([adsi]"LDAP://$Domain", $ldapFilter)
+        $searcher = New-Object DirectoryServices.DirectorySearcher([adsi]"LDAP://$($Domain.Name)", $ldapFilter)
 
         # Specify the properties to retrieve
         $searcher.PropertiesToLoad.Add("samaccountname") | out-null
         $searcher.PropertiesToLoad.Add("scriptPath") | out-null
+        $searcher.PropertiesToLoad.Add("memberOf") | out-null
 
         # Execute the search
         $results = $searcher.FindAll()
 
         # Filter the results based on scriptPath and memberOf properties
-        $AdminLogonScripts = $results | Where-Object { $_.Properties["scriptPath"] -ne $null -and ($adminGroups -match $AdminGroups) }
+        $AdminLogonScripts = $results | Where-Object { $_.Properties["scriptPath"] -ne $null -and ($_.Properties["memberOf"] -match $AdminGroups) }
 
         # "`n[!] Admins found with logon scripts"
         $AdminLogonScripts | Foreach-object {
@@ -134,7 +138,7 @@ function Find-LogonScriptCredentials {
                     File = $script.FullName
                     Credential = $_
                 }
-                [pscustomobject] $Results
+                [pscustomobject] $Results | Sort-Object -Unique
             }
         }
     }
@@ -146,16 +150,24 @@ function Find-UNCScripts {
         [array]$LogonScripts
     )
 
+    $ExcludedMatches = "copy|&|/command|%WINDIR%|-i|\*"
     $UNCFiles = @()
     [Array] $UNCFiles = foreach ($script in $LogonScripts) {
-        Get-Content $script.FullName | Select-String -Pattern '\\.*\.\w+' | ForEach-Object { $_.Matches.Value }
+        $MatchingUNCFiles = Get-Content $script.FullName | Select-String -Pattern '\\\\.*\.\w+' | ForEach-Object { $_.Matches.Value }
+        $MatchingUNCFiles | Foreach-object {
+            if ($_ -match $ExcludedMatches) {
+                # don't collect
+            } else {
+                $_
+            }
+        }
     }
     Write-Verbose "[+] UNC scripts:"
     $UNCFiles | ForEach-Object {
         Write-Verbose -Message "$_"
     }
     
-    $UNCFiles
+    $UNCFiles | Sort-Object -Unique
 }
 function Find-MappedDrives {
     [CmdletBinding()]
@@ -173,10 +185,10 @@ function Find-MappedDrives {
                 $Path = "$_"
                 (Get-Item $Path -ErrorAction Stop).FullName
             } catch [System.UnauthorizedAccessException] {
-                Write-Host "$_ : You do not have access to $Directory`n"
+                Write-Verbose "$_ : You do not have access to $Directory`n"
             }
             catch {
-                Write-Host "An error occurred: $($_.Exception.Message)"
+                Write-Verbose "An error occurred: $($_.Exception.Message)"
             }
         }
     }
@@ -202,15 +214,14 @@ function Find-UnsafeLogonScriptPermissions {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [array]$LogonScripts
+        [array]$LogonScripts,
+        [Parameter(Mandatory = $true)]
+        [array]$SafeUsersList
     )
-
-    $DomainAdmins = Get-DomainAdmins
-    $SafeUsers = 'NT AUTHORITY\\SYSTEM|Administrator'
-    $DomainAdmins | ForEach-Object { $SafeUsers = $SafeUsers + '|' + $_ }
+    $SafeUsers = $SafeUsersList
     foreach ($script in $LogonScripts){
         # Write-Verbose -Message "Checking $($script.FullName) for unsafe permissions.."
-        $ACL = (Get-Acl $script.FullName).Access
+        $ACL = (Get-Acl $script.FullName -ErrorAction SilentlyContinue).Access
         foreach ($entry in $ACL) {
             if ($entry.FileSystemRights -match $UnsafeRights `
                 -and $entry.AccessControlType -eq "Allow" `
@@ -222,7 +233,7 @@ function Find-UnsafeLogonScriptPermissions {
                     User = $entry.IdentityReference.Value
                     Rights = $entry.FileSystemRights
                 }
-                [pscustomobject] $Results
+                [pscustomobject] $Results | Sort-Object -Unique
             }
         }
     }
@@ -231,23 +242,16 @@ function Find-UnsafeUNCPermissions {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [array]$UNCScripts
+        [array]$UNCScripts,
+        [Parameter(Mandatory = $true)]
+        [array]$SafeUsersList
     )
 
     $UnsafeRights = 'FullControl|Modify|Write'
-    $DomainAdmins = $DomainAdmins = Get-DomainAdmins
-    $SafeUsers = 'NT AUTHORITY\\SYSTEM|Administrator'
-    $DomainAdmins | ForEach-Object { $SafeUsers = $SafeUsers + '|' + $_ }
+    $SafeUsers = $SafeUsersList
     foreach ($script in $UNCScripts){
-        # Write-Verbose -Message "Checking $script for unsafe permissions.."
-        try{
-            $ACL = (Get-Acl $script -ErrorAction Stop).Access
-        } catch [System.UnauthorizedAccessException] {
-            Write-Host "$_ : You do not have access to $script`n"
-        }
-        catch {
-            Write-Host "An error occurred: $($_.Exception.Message)"
-        }
+        # "Checking $script for unsafe permissions.."
+        $ACL = (Get-Acl $script -ErrorAction SilentlyContinue).Access
         foreach ($entry in $ACL) {
             if ($entry.FileSystemRights -match $UnsafeRights `
                 -and $entry.AccessControlType -eq "Allow" `
@@ -267,7 +271,7 @@ function Find-UnsafeUNCPermissions {
                     User = $entry.IdentityReference.Value
                     Rights = $entry.FileSystemRights
                 }
-                [pscustomobject] $Results
+                [pscustomobject] $Results | Sort-Object -Unique
             }
         }
     }
@@ -306,11 +310,19 @@ function Get-Art($Version) {
 \_______)(_______/|/   \__/\_______/|/          )_(   \_______)(_______/|/    )_)   )_(   |/   \__/   \_/   
                               by: Spencer Alessi @techspence                                                                 
                                           v$Version                                           
-
+                                      __,_______
+                                     / __.==---/ * * * * * *
+                                    / (-'
+                                    `-'
+                            Setting phasers to stun, please wait..
 "
 }
 
-Get-Art -Version '0.2'
+Get-Art -Version '0.3'
+
+$SafeUsers = 'NT AUTHORITY\\SYSTEM|Administrator|NT SERVICE\\TrustedInstaller|Domain Admins|Server Operators|Enterprise Admins'
+$DomainAdmins = $DomainAdmins = Get-DomainAdmins
+$DomainAdmins | ForEach-Object { $SafeUsers = $SafeUsers + '|' + $_ }
 
 # Get a list of all logon scripts
 $LogonScripts = Get-LogonScripts
@@ -322,17 +334,17 @@ $UNCScripts = Find-UNCScripts -LogonScripts $LogonScripts
 $MappedDrives = Find-MappedDrives -LogonScripts $LogonScripts
 
 # Find unsafe permissions for unc files found in logon scripts
-$UnsafeUNCPermissions = Find-UnsafeUNCPermissions -UNCScripts $UNCScripts
+$UnsafeUNCPermissions = Find-UnsafeUNCPermissions -UNCScripts $UNCScripts -SafeUsersList $SafeUsers
 
 # Find unsafe permissions for unc paths found in logon scripts
-$UnsafeMappedDrives = Find-UnsafeUNCPermissions -UNCScripts $MappedDrives
+$UnsafeMappedDrives = Find-UnsafeUNCPermissions -UNCScripts $MappedDrives -SafeUsersList $SafeUsers
 
 # Find unsafe NETLOGON & SYSVOL share permissions
 $NetlogonSysvol = Get-NetlogonSysvol
-$UnsafeNetlogonSysvol = Find-UnsafeUNCPermissions -UNCScripts $NetlogonSysvol
+$UnsafeNetlogonSysvol = Find-UnsafeUNCPermissions -UNCScripts $NetlogonSysvol -SafeUsersList $SafeUsers
 
 # Find unsafe permissions on logon scripts
-$UnsafeLogonScripts = Find-UnsafeLogonScriptPermissions -LogonScripts $LogonScripts
+$UnsafeLogonScripts = Find-UnsafeLogonScriptPermissions -LogonScripts $LogonScripts -SafeUsersList $SafeUsers
 
 # Find admins that have logon scripts assigned
 $AdminLogonScripts = Find-AdminLogonScripts
@@ -347,3 +359,11 @@ Show-Results $UnsafeUNCPermissions
 Show-Results $UnsafeNetlogonSysvol
 Show-Results $AdminLogonScripts
 Show-Results $Credentials
+
+if ($SaveOutput) {
+    $UnsafeMappedDrives | Export-CSV -NoTypeInformation UnsafeMappedDrives.csv
+    $UnsafeLogonScripts | Export-CSV -NoTypeInformation UnsafeLogonScripts.csv
+    $UnsafeUNCPermissions | Export-CSV -NoTypeInformation UnsafeUNCPermissions.csv
+    $AdminLogonScripts | Export-CSV -NoTypeInformation AdminLogonScripts.csv
+    $Credentials | Export-CSV -NoTypeInformation Credentials.csv
+}
