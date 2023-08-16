@@ -12,11 +12,14 @@ ScriptSentry finds misconfigured and dangerous logon scripts.
 | Done | Add additional mapped drive checks | Added check for mapped drives via New-SmbMapping (pwsh) & .MapNetworkDrive (vbs)|
 | Done | Improved the ASCII art | Because its fun|
 | Done | Improved regex to reduce false positives | Because regex is hard|
+| Done | Added support for finding nonexistent shares | Checks DNS for file shares that don't exist|
+| Done | Write a blog post about this tool/why I made it | Link to blog post below|
 | In progress | Additional regex to search for other dangerous stuff in logon scripts | More detections in the pipeline |
-| ToDo | Write a blog post about this tool/why I made it | |
 | ToDo | Create an official release | |
 | ToDo | Publish to PSGallery | |
 
+### Read the blog post
+https://offsec.blog/hidden-menace-how-to-identify-misconfigured-and-dangerous-logon-scripts/
 
 ### Installing & Running
 ```PowerShell
@@ -54,7 +57,11 @@ Invoke-ScriptSentry
 \_______)(_______/|/   \__/\_______/|/          )_(   \_______)(_______/|/    )_)   )_(   |/   \__/   \_/
                               by: Spencer Alessi @techspence
                                           v0.3
-
+                                      __,_______
+                                     / __.==---/ * * * * * *
+                                    / (-'
+                                    `-'
+                            Setting phasers to stun, please wait..
 
 ########## Unsafe UNC folder permissions ##########
 
@@ -101,4 +108,12 @@ Credentials \\eureka.local\sysvol\eureka.local\scripts\ADCheck.ps1 $password = C
 Credentials \\eureka.local\sysvol\eureka.local\scripts\shares.cmd  net use f: \\eureka-dc01\fileshare1\it /user:itadmin Password2468!
 Credentials \\eureka.local\sysvol\eureka.local\scripts\test.cmd    net use g: \\eureka-dc01\fileshare1 /user:user1 Password3355!
 Credentials \\eureka.local\sysvol\eureka.local\scripts\test.cmd    net use h: \\eureka-dc01\fileshare1\accounting /user:userfoo Password5!
+
+########## Nonexistent Shares ##########
+
+Type             Server             Share                                 Script                                                   DNS
+----             ------             -----                                 ------                                                   ---
+NonexistentShare acme               \\acme\DATA                           \\eureka.local\sysvol\eureka.local\scripts\marketing.bat No
+NonexistentShare eureka-srvnotexist \\eureka-srvnotexist\NonExistingShare \\eureka.local\sysvol\eureka.local\scripts\test.cmd      No
+NonexistentShare NAS                \\NAS\PUBLIC                          \\eureka.local\sysvol\eureka.local\scripts\test.bat      No
 ```
