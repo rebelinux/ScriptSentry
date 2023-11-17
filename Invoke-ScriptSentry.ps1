@@ -23,12 +23,68 @@ Param(
     [boolean]$SaveOutput = $false
 )
     
-function Get-Domains {
+function Get-ForestDomains {
     [CmdletBinding()]
     param()
 
     $forest = [System.DirectoryServices.ActiveDirectory.Forest]::GetCurrentForest()
     $forest.Domains
+}
+function Get-Domain {
+    [OutputType([System.DirectoryServices.ActiveDirectory.Domain])]
+    [CmdletBinding()]
+    Param(
+        [Parameter(Position = 0, ValueFromPipeline = $True)]
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
+    )
+
+    PROCESS {
+        if ($PSBoundParameters['Credential']) {
+
+            Write-Verbose '[Get-Domain] Using alternate credentials for Get-Domain'
+
+            if ($PSBoundParameters['Domain']) {
+                $TargetDomain = $Domain
+            }
+            else {
+                # if no domain is supplied, extract the logon domain from the PSCredential passed
+                $TargetDomain = $Credential.GetNetworkCredential().Domain
+                Write-Verbose "[Get-Domain] Extracted domain '$TargetDomain' from -Credential"
+            }
+
+            $DomainContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('Domain', $TargetDomain, $Credential.UserName, $Credential.GetNetworkCredential().Password)
+
+            try {
+                [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($DomainContext)
+            }
+            catch {
+                Write-Verbose "[Get-Domain] The specified domain '$TargetDomain' does not exist, could not be contacted, there isn't an existing trust, or the specified credentials are invalid: $_"
+            }
+        }
+        elseif ($PSBoundParameters['Domain']) {
+            $DomainContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('Domain', $Domain)
+            try {
+                [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($DomainContext)
+            }
+            catch {
+                Write-Verbose "[Get-Domain] The specified domain '$Domain' does not exist, could not be contacted, or there isn't an existing trust : $_"
+            }
+        }
+        else {
+            try {
+                [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
+            }
+            catch {
+                Write-Verbose "[Get-Domain] Error retrieving the current domain: $_"
+            }
+        }
+    }
 }
 function Get-DomainSearcher {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '')]
@@ -951,7 +1007,7 @@ function Get-LogonScripts {
 
     # Get the current domain name from the environment
     # $currentDomain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
-    $Domains = Get-Domains
+    $Domains = Get-ForestDomains
 
     foreach ($Domain in $Domains) {
         # $SysvolScripts = '\\' + (Get-ADDomain).DNSRoot + '\sysvol\' + (Get-ADDomain).DNSRoot + '\scripts'
@@ -971,7 +1027,7 @@ function Get-GPOLogonScripts {
 
     # Get the current domain name from the environment
     # $currentDomain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
-    $Domains = Get-Domains
+    $Domains = Get-ForestDomains
 
     foreach ($Domain in $Domains) {
         $Policies = Get-ChildItem "\\$($Domain.Name)\SysVol\$($Domain.Name)\Policies" -ErrorAction SilentlyContinue
@@ -991,7 +1047,7 @@ function Get-NetlogonSysvol {
     [CmdletBinding()]
     param()
 
-    $Domains = Get-Domains
+    $Domains = Get-ForestDomains
     foreach ($Domain in $Domains){
         "\\$($Domain.Name)\NETLOGON"
         "\\$($Domain.Name)\SYSVOL"
@@ -1168,7 +1224,7 @@ function Find-LogonScriptCredentials {
     )
     foreach ($script in $LogonScripts) {
         # Write-Verbose -Message "Checking $($Script.FullName) for credentials.."
-        $Credentials = Get-Content -Path $script.FullName | Select-String -Pattern "/user:","-AsPlainText" -AllMatches
+        $Credentials = Get-Content -Path $script.FullName -ErrorAction SilentlyContinue | Select-String -Pattern "/user:","-AsPlainText" -AllMatches
         if ($Credentials) {
             # "`n[!] CREDENTIALS FOUND!"
             $Credentials | ForEach-Object {
@@ -1192,7 +1248,7 @@ function Find-UNCScripts {
     $ExcludedMatches = "copy|&|/command|%WINDIR%|-i|\*"
     $UNCFiles = @()
     [Array] $UNCFiles = foreach ($script in $LogonScripts) {
-        $MatchingUNCFiles = Get-Content $script.FullName | Select-String -Pattern '\\\\.*\.\w+' | ForEach-Object { $_.Matches.Value }
+        $MatchingUNCFiles = Get-Content $script.FullName -ErrorAction SilentlyContinue | Select-String -Pattern '\\\\.*\.\w+' | ForEach-Object { $_.Matches.Value }
         $MatchingUNCFiles | Foreach-object {
             if ($_ -match $ExcludedMatches) {
                 # don't collect
@@ -1217,7 +1273,7 @@ function Find-MappedDrives {
 
     $Shares = @()
     [Array] $Shares = foreach ($script in $LogonScripts) {
-        $temp = Get-Content $script.FullName | Select-String -Pattern '.*net use.*','New-SmbMapping','.MapNetworkDrive' | ForEach-Object { $_.Matches.Value } 
+        $temp = Get-Content $script.FullName -ErrorAction SilentlyContinue | Select-String -Pattern '.*net use.*','New-SmbMapping','.MapNetworkDrive' | ForEach-Object { $_.Matches.Value } 
         $temp = $temp | Select-String -Pattern '\\\\[\w\.\-]+\\[\w\-_\\.]+' | ForEach-Object { $_.Matches.Value }
         $temp | ForEach-Object {
             try {
@@ -1249,7 +1305,7 @@ function Find-NonexistentShares {
     )
     $LogonScriptShares = @()
     [Array] $LogonScriptShares = foreach ($script in $LogonScripts) {
-        $temp = Get-Content $script.FullName | Select-String -Pattern '.*net use.*','New-SmbMapping','.MapNetworkDrive' | ForEach-Object { $_.Matches.Value } 
+        $temp = Get-Content $script.FullName -ErrorAction SilentlyContinue | Select-String -Pattern '.*net use.*','New-SmbMapping','.MapNetworkDrive' | ForEach-Object { $_.Matches.Value }
         $temp = $temp | Select-String -Pattern '\\\\[\w\.\-]+\\[\w\-_\\.]+' | ForEach-Object { $_.Matches.Value }
         $temp | ForEach-Object {
             $ServerList = [ordered] @{
@@ -1261,7 +1317,7 @@ function Find-NonexistentShares {
         }
     }
 
-    $LogonScriptShares = $LogonScriptShares | Sort-Object -Property Script -Unique
+    $LogonScriptShares = $LogonScriptShares #| Sort-Object -Property Share -Unique
     $AdminLogonScripts = Find-AdminLogonScripts -AdminUsers $AdminUsers
     $Admins = 'No'
     $Exploitable = 'No'
@@ -1276,7 +1332,7 @@ function Find-NonexistentShares {
 
         if ($ServerWithoutDNS) {
             foreach ($AdminScript in $AdminLogonScripts) {
-                if ((Get-Item $LogonScriptShare.Script).Name -match $AdminScript.LogonScript){
+                if ((Get-Item $ServerWithoutDNS.Script).Name -match $AdminScript.LogonScript){
                     $Admins = $AdminScript.User
                     $Exploitable = 'Yes'
                     $Results = [ordered] @{
@@ -1402,7 +1458,7 @@ function Find-UnsafeLogonScriptPermissions {
     $SafeUsers = $SafeUsersList
     foreach ($script in $LogonScripts){
         # Write-Verbose -Message "Checking $($script.FullName) for unsafe permissions.."
-        $ACL = (Get-Acl $script.FullName -ErrorAction SilentlyContinue).Access
+        $ACL = try { (Get-Acl $script.FullName -ErrorAction SilentlyContinue).Access } catch{}
         foreach ($entry in $ACL) {
             if ($entry.FileSystemRights -match $UnsafeRights `
                 -and $entry.AccessControlType -eq "Allow" `
@@ -1500,7 +1556,7 @@ $NonExistentSharesScripts = Find-NonexistentShares -LogonScripts $LogonScripts -
 $NonExistentShares = $NonExistentSharesScripts | Where-Object {$_.Exploitable -eq 'Potentially'} | Sort-Object -Property Share -Unique
 
 # Find Exploitable logon scripts
-$ExploitableLogonScripts = $NonExistentSharesScripts | Where-Object {$_.Exploitable -eq 'Yes'} | Sort-Object -Property Admins -Unique
+$ExploitableLogonScripts = $NonExistentSharesScripts | Where-Object {$_.Exploitable -eq 'Yes'}
 
 # Find unsafe permissions for unc files found in logon scripts
 $UnsafeUNCPermissions = Find-UnsafeUNCPermissions -UNCScripts $UNCScripts -SafeUsersList $SafeUsers
@@ -1525,24 +1581,24 @@ $AdminLogonScripts = Find-AdminLogonScripts -AdminUsers $AdminUsers
 $Credentials = Find-LogonScriptCredentials -LogonScripts $LogonScripts
 
 # Show all results
-Show-Results $UnsafeMappedDrives
-Show-Results $UnsafeLogonScripts
-Show-Results $UnsafeGPOLogonScripts
-Show-Results $UnsafeUNCPermissions
-Show-Results $UnsafeNetlogonSysvol
-Show-Results $Credentials
-Show-Results $NonExistentShares
-Show-Results $AdminLogonScripts
-Show-Results $ExploitableLogonScripts
+if ($UnsafeMappedDrives) {Show-Results $UnsafeMappedDrives}
+if ($UnsafeLogonScripts) {Show-Results $UnsafeLogonScripts}
+if ($UnsafeGPOLogonScripts) {Show-Results $UnsafeGPOLogonScripts}
+if ($UnsafeUNCPermissions) {Show-Results $UnsafeUNCPermissions}
+if ($UnsafeNetlogonSysvol) {Show-Results $UnsafeNetlogonSysvol}
+if ($Credentials) {Show-Results $Credentials}
+if ($NonExistentShares) {Show-Results $NonExistentShares}
+if ($AdminLogonScripts) {Show-Results $AdminLogonScripts}
+if ($ExploitableLogonScripts) {Show-Results $ExploitableLogonScripts}
 
 if ($SaveOutput) {
-    $UnsafeMappedDrives | Export-CSV -NoTypeInformation UnsafeMappedDrives.csv
-    $UnsafeLogonScripts | Export-CSV -NoTypeInformation UnsafeLogonScripts.csv
-    $UnsafeGPOLogonScripts | Export-Csv -NoTypeInformation UnsafeGPOLogonScripts.csv
-    $UnsafeUNCPermissions | Export-CSV -NoTypeInformation UnsafeUNCPermissions.csv
-    $UnsafeNetlogonSysvol | Export-Csv -NoTypeInformation UnsafeNetlogonSysvol.csv
-    $AdminLogonScripts | Export-CSV -NoTypeInformation AdminLogonScripts.csv
-    $Credentials | Export-CSV -NoTypeInformation Credentials.csv
-    $NonExistentShares | Export-CSV -NoTypeInformation NonExistentShares.csv
-    $ExploitableLogonScripts | Export-CSV -NoTypeInformation ExploitableLogonScripts.csv
+    if ($UnsafeMappedDrives) {$UnsafeMappedDrives | Export-CSV -NoTypeInformation UnsafeMappedDrives.csv}
+    if ($UnsafeLogonScripts) {$UnsafeLogonScripts | Export-CSV -NoTypeInformation UnsafeLogonScripts.csv}
+    if ($UnsafeGPOLogonScripts) {$UnsafeGPOLogonScripts | Export-Csv -NoTypeInformation UnsafeGPOLogonScripts.csv}
+    if ($UnsafeUNCPermissions) {$UnsafeUNCPermissions | Export-CSV -NoTypeInformation UnsafeUNCPermissions.csv}
+    if ($UnsafeNetlogonSysvol) {$UnsafeNetlogonSysvol | Export-Csv -NoTypeInformation UnsafeNetlogonSysvol.csv}
+    if ($AdminLogonScripts) {$AdminLogonScripts | Export-CSV -NoTypeInformation AdminLogonScripts.csv}
+    if ($Credentials) {$Credentials | Export-CSV -NoTypeInformation Credentials.csv}
+    if ($NonExistentShares) {$NonExistentShares | Export-CSV -NoTypeInformation NonExistentShares.csv}
+    if ($ExploitableLogonScripts) {$ExploitableLogonScripts | Export-CSV -NoTypeInformation ExploitableLogonScripts.csv}
 }
