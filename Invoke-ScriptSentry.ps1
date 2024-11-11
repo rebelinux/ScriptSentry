@@ -19,13 +19,28 @@ Invoke-ScriptSentry | Out-File c:\temp\ScriptSentry.txt
 Invoke-ScriptSentry -SaveOutput $true
 
 #>
-[CmdletBinding()]
+[CmdletBinding(DefaultParameterSetName = 'Default')]
 Param(
     [boolean]$SaveOutput = $false,
-    
+       
     [Management.Automation.PSCredential]
     [Management.Automation.CredentialAttribute()]
-    $Credential = [Management.Automation.PSCredential]::Empty
+    $Credential = [Management.Automation.PSCredential]::Empty,
+
+    [Parameter(Mandatory = $true,
+    ParameterSetName = 'socks')]
+    [boolean]
+    $socks,
+
+    [Parameter(Mandatory = $true,
+    ParameterSetName = 'socks')]
+    [string]
+    $Server,
+    
+    [Parameter(Mandatory = $true,
+    ParameterSetName = 'socks')]
+    [string]
+    $Domain
 )
     
 function Get-ForestDomains {
@@ -1011,16 +1026,30 @@ function Get-LogonScripts {
     param(
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
-        $Credential = [Management.Automation.PSCredential]::Empty
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [string]
+        $Domain,
+
+        [string]
+        $Server
     )
 
     # Get the current domain name from the environment
     # $currentDomain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
-    $Domains = Get-ForestDomains
+    if ($Domain) {
+        $Domains = $Domain
+    } else {
+        $Domains = Get-ForestDomains
+    }
 
     foreach ($Domain in $Domains) {
         # $SysvolScripts = '\\' + (Get-ADDomain).DNSRoot + '\sysvol\' + (Get-ADDomain).DNSRoot + '\scripts'
-        $SysvolScripts = "\\$($Domain.Name)\sysvol\$($Domain.Name)\scripts"
+        if ($Server) {
+            Get-ChildItem "\\$Server\sysvol\$($Domain.Name)\scripts" -ErrorAction SilentlyContinue
+        } else {
+            $SysvolScripts = Get-ChildItem "\\$($Domain.Name)\sysvol\$($Domain.Name)\scripts" -ErrorAction SilentlyContinue
+        }
         $ExtensionList = '.bat|.vbs|.ps1|.cmd|.kix'
         $LogonScripts = try { Get-ChildItem -Path $SysvolScripts -Recurse | Where-Object {$_.Extension -match $ExtensionList} } catch {}
         Write-Verbose "[+] Logon scripts:"
@@ -1035,15 +1064,29 @@ function Get-GPOLogonScripts {
     param(
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
-        $Credential = [Management.Automation.PSCredential]::Empty
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [string]
+        $Domain,
+
+        [string]
+        $Server
     )
 
     # Get the current domain name from the environment
     # $currentDomain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
-    $Domains = Get-ForestDomains
+    if ($Domain) {
+        $Domains = $Domain
+    } else {
+        $Domains = Get-ForestDomains
+    }
 
     foreach ($Domain in $Domains) {
-        $Policies = Get-ChildItem "\\$($Domain.Name)\SysVol\$($Domain.Name)\Policies" -ErrorAction SilentlyContinue
+        if ($Server) {
+            $Policies = Get-ChildItem "\\$Server\SYSVOL\$($Domain.Name)\POLICIES\" -ErrorAction SilentlyContinue
+        } else {
+            $Policies = Get-ChildItem "\\$($Domain.Name)\SysVol\$($Domain.Name)\Policies" -ErrorAction SilentlyContinue
+        }
         $Policies | ForEach-Object { 
             $GPOLogonScripts = Get-Content -Path "$($_.FullName)\User\Scripts\scripts.ini" -ErrorAction SilentlyContinue | Select-String -Pattern "\\\\.*\.\w+" | ForEach-Object { $_.Matches.Value }
             Write-Verbose "[+] GPO Logon scripts:"
@@ -1058,12 +1101,27 @@ function Get-GPOLogonScripts {
 }
 function Get-NetlogonSysvol {
     [CmdletBinding()]
-    param()
+    param(
+        [string]
+        $Domain,
 
-    $Domains = Get-ForestDomains
+        [string]
+        $Server
+    )
+
+    if ($Domain) {
+        $Domains = $Domain
+    } else {
+        $Domains = Get-ForestDomains
+    }
     foreach ($Domain in $Domains){
-        "\\$($Domain.Name)\NETLOGON"
-        "\\$($Domain.Name)\SYSVOL"
+        if ($Server) {
+            "\\$Server\NETLOGON"
+            "\\$Server\SYSVOL"
+        } else {
+            "\\$($Domain.Name)\NETLOGON"
+            "\\$($Domain.Name)\SYSVOL"
+        }
     }
 }
 function Get-Art($Version) {
@@ -1573,7 +1631,7 @@ function Show-Results {
     }
 }
 
-Get-Art -Version '0.6'
+Get-Art -Version '0.7-dev'
 
 $SafeUsers = 'NT AUTHORITY\\SYSTEM|Administrator|NT SERVICE\\TrustedInstaller|Domain Admins|Server Operators|Enterprise Admins|CREATOR OWNER'
 $AdminGroups = @("Account Operators", "Administrators", "Backup Operators", "Cryptographic Operators", "Distributed COM Users", "Domain Admins", "Domain Controllers", "Enterprise Admins", "Print Operators", "Schema Admins", "Server Operators")
@@ -1585,14 +1643,26 @@ if ($Credential.UserName) {
 }
 
 if ($Credential.UserName) {
-    $AdminUsers = $AdminGroups | ForEach-Object { (Get-DomainGroupMember -Identity $_ -Recurse -Credential $Credential | Where-Object {$_.MemberObjectClass -eq 'user'})} | Sort-Object -Property MemberName -Unique
+    if ($socks) {
+        $AdminUsers = $AdminGroups | ForEach-Object { (Get-DomainGroupMember -Identity $_ -Recurse -Credential $Credential -Server $Server -Domain $Domain | Where-Object {$_.MemberObjectClass -eq 'user'})} | Sort-Object -Property MemberName -Unique
+    } else {
+        $AdminUsers = $AdminGroups | ForEach-Object { (Get-DomainGroupMember -Identity $_ -Recurse -Credential $Credential | Where-Object {$_.MemberObjectClass -eq 'user'})} | Sort-Object -Property MemberName -Unique
+    }
     $AdminUsers | ForEach-Object { $SafeUsers = $SafeUsers + '|' + $_.MemberName }
 
     # Get a list of all logon scripts
-    $LogonScripts = Get-LogonScripts -Credential $Credential
+    if ($socks) {
+        $LogonScripts = Get-LogonScripts -Credential $Credential -Domain $Domain -Server $Server
+    } else {
+        $LogonScripts = Get-LogonScripts -Credential $Credential
+    }
 
     # Get a list of all GPO logon scripts
-    $GPOLogonScripts = Get-GPOLogonScripts -Credential $Credential
+    if ($socks) {
+        $GPOLogonScripts = Get-GPOLogonScripts -Credential $Credential -Domain $Domain -Server $Server
+    } else {
+        $GPOLogonScripts = Get-GPOLogonScripts -Credential $Credential -Domain $Domain -Server $Server
+    }
 
     if ($LogonScripts) {
         # Find logon scripts (.bat, .vbs, .cmd, .ps1, .kix) that contain unc paths (e.g. \\srv01\fileshare1)
@@ -1758,4 +1828,5 @@ if ($SaveOutput) {
 
     Get-ChildItem -Filter "*.csv" -File
 }
+
 }
