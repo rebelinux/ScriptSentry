@@ -19,9 +19,28 @@ Invoke-ScriptSentry | Out-File c:\temp\ScriptSentry.txt
 Invoke-ScriptSentry -SaveOutput $true
 
 #>
-[CmdletBinding()]
+[CmdletBinding(DefaultParameterSetName = 'Default')]
 Param(
-    [boolean]$SaveOutput = $false
+    [boolean]$SaveOutput = $false,
+       
+    [Management.Automation.PSCredential]
+    [Management.Automation.CredentialAttribute()]
+    $Credential = [Management.Automation.PSCredential]::Empty,
+
+    [Parameter(Mandatory = $true,
+    ParameterSetName = 'socks')]
+    [boolean]
+    $socks,
+
+    [Parameter(Mandatory = $true,
+    ParameterSetName = 'socks')]
+    [string]
+    $Server,
+    
+    [Parameter(Mandatory = $true,
+    ParameterSetName = 'socks')]
+    [string]
+    $Domain
 )
     
 function Get-ForestDomains {
@@ -1004,15 +1023,33 @@ function Get-DomainObject {
 }
 function Get-LogonScripts {
     [CmdletBinding()]
-    param()
+    param(
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [string]
+        $Domain,
+
+        [string]
+        $Server
+    )
 
     # Get the current domain name from the environment
     # $currentDomain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
-    $Domains = Get-ForestDomains
+    if ($Domain) {
+        $Domains = $Domain
+    } else {
+        $Domains = Get-ForestDomains
+    }
 
     foreach ($Domain in $Domains) {
         # $SysvolScripts = '\\' + (Get-ADDomain).DNSRoot + '\sysvol\' + (Get-ADDomain).DNSRoot + '\scripts'
-        $SysvolScripts = "\\$($Domain.Name)\sysvol\$($Domain.Name)\scripts"
+        if ($Server) {
+            Get-ChildItem "\\$Server\sysvol\$($Domain.Name)\scripts" -ErrorAction SilentlyContinue
+        } else {
+            $SysvolScripts = Get-ChildItem "\\$($Domain.Name)\sysvol\$($Domain.Name)\scripts" -ErrorAction SilentlyContinue
+        }
         $ExtensionList = '.bat|.vbs|.ps1|.cmd|.kix'
         $LogonScripts = try { Get-ChildItem -Path $SysvolScripts -Recurse | Where-Object {$_.Extension -match $ExtensionList} } catch {}
         Write-Verbose "[+] Logon scripts:"
@@ -1024,14 +1061,32 @@ function Get-LogonScripts {
 }
 function Get-GPOLogonScripts {
     [CmdletBinding()]
-    param()
+    param(
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [string]
+        $Domain,
+
+        [string]
+        $Server
+    )
 
     # Get the current domain name from the environment
     # $currentDomain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
-    $Domains = Get-ForestDomains
+    if ($Domain) {
+        $Domains = $Domain
+    } else {
+        $Domains = Get-ForestDomains
+    }
 
     foreach ($Domain in $Domains) {
-        $Policies = Get-ChildItem "\\$($Domain.Name)\SysVol\$($Domain.Name)\Policies" -ErrorAction SilentlyContinue
+        if ($Server) {
+            $Policies = Get-ChildItem "\\$Server\SYSVOL\$($Domain.Name)\POLICIES\" -ErrorAction SilentlyContinue
+        } else {
+            $Policies = Get-ChildItem "\\$($Domain.Name)\SysVol\$($Domain.Name)\Policies" -ErrorAction SilentlyContinue
+        }
         $Policies | ForEach-Object { 
             $GPOLogonScripts = Get-Content -Path "$($_.FullName)\User\Scripts\scripts.ini" -ErrorAction SilentlyContinue | Select-String -Pattern "\\\\.*\.\w+" | ForEach-Object { $_.Matches.Value }
             Write-Verbose "[+] GPO Logon scripts:"
@@ -1046,12 +1101,27 @@ function Get-GPOLogonScripts {
 }
 function Get-NetlogonSysvol {
     [CmdletBinding()]
-    param()
+    param(
+        [string]
+        $Domain,
 
-    $Domains = Get-ForestDomains
+        [string]
+        $Server
+    )
+
+    if ($Domain) {
+        $Domains = $Domain
+    } else {
+        $Domains = Get-ForestDomains
+    }
     foreach ($Domain in $Domains){
-        "\\$($Domain.Name)\NETLOGON"
-        "\\$($Domain.Name)\SYSVOL"
+        if ($Server) {
+            "\\$Server\NETLOGON"
+            "\\$Server\SYSVOL"
+        } else {
+            "\\$($Domain.Name)\NETLOGON"
+            "\\$($Domain.Name)\SYSVOL"
+        }
     }
 }
 function Get-Art($Version) {
@@ -1200,7 +1270,10 @@ A custom PSObject with LDAP hashtable properties translated.
 function Find-AdminLogonScripts {
     [CmdletBinding()]
     param (
-        [array]$AdminUsers
+        [array]$AdminUsers,
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
     ) 
     # Enabled user accounts
     Foreach ($Admin in $AdminUsers) {
@@ -1221,11 +1294,14 @@ function Find-LogonScriptCredentials {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [array]$LogonScripts
+        [array]$LogonScripts,
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
     )
     foreach ($script in $LogonScripts) {
         # Write-Verbose -Message "Checking $($Script.FullName) for credentials.."
-        $Credentials = Get-Content -Path $script.FullName -ErrorAction SilentlyContinue | Select-String -Pattern "/user:","-AsPlainText" -AllMatches
+        $Credentials = Get-Content -Path $script.FullName -ErrorAction SilentlyContinue | Select-String -Pattern "/u[\w]*:","-AsPlainText" -AllMatches
         if ($Credentials) {
             # "`n[!] CREDENTIALS FOUND!"
             $Credentials | ForEach-Object {
@@ -1243,7 +1319,10 @@ function Find-UNCScripts {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [array]$LogonScripts
+        [array]$LogonScripts,
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
     )
 
     $ExcludedMatches = "copy|&|/command|%WINDIR%|-i|\*"
@@ -1269,7 +1348,10 @@ function Find-MappedDrives {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [array]$LogonScripts
+        [array]$LogonScripts,
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
     )
 
     $Shares = @()
@@ -1302,7 +1384,10 @@ function Find-NonexistentShares {
     [CmdletBinding()]
     param (
         [array]$LogonScripts,
-        [array]$AdminUsers
+        [array]$AdminUsers,
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
     )
     $LogonScriptShares = @()
     [Array] $LogonScriptShares = foreach ($script in $LogonScripts) {
@@ -1371,7 +1456,10 @@ function Find-UnsafeLogonScriptPermissions {
         [Parameter(Mandatory = $true)]
         [array]$LogonScripts,
         [Parameter(Mandatory = $true)]
-        [array]$SafeUsersList
+        [array]$SafeUsersList,
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
     )
 
     $UnsafeRights = 'FullControl|Modify|Write'
@@ -1401,7 +1489,10 @@ function Find-UnsafeUNCPermissions {
         [Parameter(Mandatory = $true)]
         [array]$UNCScripts,
         [Parameter(Mandatory = $true)]
-        [array]$SafeUsersList
+        [array]$SafeUsersList,
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
     )
 
     $UnsafeRights = 'FullControl|Modify|Write'
@@ -1452,7 +1543,10 @@ function Find-UnsafeLogonScriptPermissions {
         [Parameter(Mandatory = $true)]
         [array]$LogonScripts,
         [Parameter(Mandatory = $true)]
-        [array]$SafeUsersList
+        [array]$SafeUsersList,
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
     )
 
     $UnsafeRights = 'FullControl|Modify|Write'
@@ -1482,7 +1576,10 @@ function Find-UnsafeGPOLogonScriptPermissions {
         [Parameter(Mandatory = $true)]
         [array]$GPOLogonScripts,
         [Parameter(Mandatory = $true)]
-        [array]$SafeUsersList
+        [array]$SafeUsersList,
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
     )
 
     $UnsafeRights = 'FullControl|Modify|Write'
@@ -1534,37 +1631,143 @@ function Show-Results {
     }
 }
 
-Get-Art -Version '0.6'
+Get-Art -Version '0.7-dev'
 
 $SafeUsers = 'NT AUTHORITY\\SYSTEM|Administrator|NT SERVICE\\TrustedInstaller|Domain Admins|Server Operators|Enterprise Admins|CREATOR OWNER'
 $AdminGroups = @("Account Operators", "Administrators", "Backup Operators", "Cryptographic Operators", "Distributed COM Users", "Domain Admins", "Domain Controllers", "Enterprise Admins", "Print Operators", "Schema Admins", "Server Operators")
-$AdminUsers = $AdminGroups | ForEach-Object { (Get-DomainGroupMember -Identity $_ -Recurse | Where-Object {$_.MemberObjectClass -eq 'user'})} | Sort-Object -Property MemberName -Unique
-$AdminUsers | ForEach-Object { $SafeUsers = $SafeUsers + '|' + $_.MemberName }
 
-# Get a list of all logon scripts
-$LogonScripts = Get-LogonScripts
-
-# Get a list of all GPO logon scripts
-$GPOLogonScripts = Get-GPOLogonScripts
-
-if ($LogonScripts) {
-    # Find logon scripts (.bat, .vbs, .cmd, .ps1, .kix) that contain unc paths (e.g. \\srv01\fileshare1)
-    $UNCScripts = Find-UNCScripts -LogonScripts $LogonScripts
-
-    # Find mapped drives (e.g. \\srv01\fileshare1, \\srv02\fileshare2\accounting)
-    $MappedDrives = Find-MappedDrives -LogonScripts $LogonScripts
-
-    # Find nonexistent shares
-    $NonExistentSharesScripts = Find-NonexistentShares -LogonScripts $LogonScripts -AdminUsers $AdminUsers
-    $NonExistentShares = $NonExistentSharesScripts | Where-Object {$_.Exploitable -eq 'Potentially'} | Sort-Object -Property Share -Unique
-
-    # Find unsafe permissions on logon scripts
-    $UnsafeLogonScripts = Find-UnsafeLogonScriptPermissions -LogonScripts $LogonScripts -SafeUsersList $SafeUsers
-
-    # Find credentials in logon scripts
-    $Credentials = Find-LogonScriptCredentials -LogonScripts $LogonScripts
+if ($Credential.UserName) {
+        Write-Host "[i] Credentials detected. Running ScriptSentry as: $($Credential.UserName)"
 } else {
-    Write-Host "[i] No logon scripts found!`n" -ForegroundColor Cyan
+    # nothing, no creds supplied
+}
+
+if ($Credential.UserName) {
+    if ($socks) {
+        $AdminUsers = $AdminGroups | ForEach-Object { (Get-DomainGroupMember -Identity $_ -Recurse -Credential $Credential -Server $Server -Domain $Domain | Where-Object {$_.MemberObjectClass -eq 'user'})} | Sort-Object -Property MemberName -Unique
+    } else {
+        $AdminUsers = $AdminGroups | ForEach-Object { (Get-DomainGroupMember -Identity $_ -Recurse -Credential $Credential | Where-Object {$_.MemberObjectClass -eq 'user'})} | Sort-Object -Property MemberName -Unique
+    }
+    $AdminUsers | ForEach-Object { $SafeUsers = $SafeUsers + '|' + $_.MemberName }
+
+    # Get a list of all logon scripts
+    if ($socks) {
+        $LogonScripts = Get-LogonScripts -Credential $Credential -Domain $Domain -Server $Server
+    } else {
+        $LogonScripts = Get-LogonScripts -Credential $Credential
+    }
+
+    # Get a list of all GPO logon scripts
+    if ($socks) {
+        $GPOLogonScripts = Get-GPOLogonScripts -Credential $Credential -Domain $Domain -Server $Server
+    } else {
+        $GPOLogonScripts = Get-GPOLogonScripts -Credential $Credential -Domain $Domain -Server $Server
+    }
+
+    if ($LogonScripts) {
+        # Find logon scripts (.bat, .vbs, .cmd, .ps1, .kix) that contain unc paths (e.g. \\srv01\fileshare1)
+        $UNCScripts = Find-UNCScripts -LogonScripts $LogonScripts -Credential $Credential
+
+        # Find mapped drives (e.g. \\srv01\fileshare1, \\srv02\fileshare2\accounting)
+        $MappedDrives = Find-MappedDrives -LogonScripts $LogonScripts -Credential $Credential
+
+        # Find nonexistent shares
+        $NonExistentSharesScripts = Find-NonexistentShares -LogonScripts $LogonScripts -AdminUsers $AdminUsers -Credential $Credential
+        $NonExistentShares = $NonExistentSharesScripts | Where-Object {$_.Exploitable -eq 'Potentially'} | Sort-Object -Property Share -Unique
+
+        # Find unsafe permissions on logon scripts
+        $UnsafeLogonScripts = Find-UnsafeLogonScriptPermissions -LogonScripts $LogonScripts -SafeUsersList $SafeUsers -Credential $Credential
+
+        # Find credentials in logon scripts
+        $Credentials = Find-LogonScriptCredentials -LogonScripts $LogonScripts -Credential $Credential
+    } else {
+        Write-Host "[i] No logon scripts found!`n" -ForegroundColor Cyan
+    }
+    
+    if ($UNCScripts) {
+        # Find unsafe permissions for unc files found in logon scripts
+        $UnsafeUNCPermissions = Find-UnsafeUNCPermissions -UNCScripts $UNCScripts -SafeUsersList $SafeUsers -Credential $Credential
+    } else {
+        Write-Host "[i] No UNC files found!`n" -ForegroundColor Cyan
+    }
+    
+    if ($MappedDrives) {
+        # Find unsafe permissions for unc paths found in logon scripts
+        $UnsafeMappedDrives = Find-UnsafeUNCPermissions -UNCScripts $MappedDrives -SafeUsersList $SafeUsers -Credential $Credential
+    } else {
+        Write-Host "[i] No mapped drives found!`n" -ForegroundColor Cyan
+    }
+
+    # Find unsafe NETLOGON & SYSVOL share permissions
+    $NetlogonSysvol = Get-NetlogonSysvol
+    $UnsafeNetlogonSysvol = Find-UnsafeUNCPermissions -UNCScripts $NetlogonSysvol -SafeUsersList $SafeUsers -Credential $Credential
+
+    if ($GPOLogonScripts) {
+        # Find unsafe permissions on GPO logon scripts
+        $UnsafeGPOLogonScripts = Find-UnsafeGPOLogonScriptPermissions -GPOLogonScripts $GPOLogonScripts -SafeUsersList $SafeUsers -Credential $Credential
+    } else {
+        Write-Host "[i] No GPO logon scripts found!`n" -ForegroundColor Cyan
+    }
+
+    # Find admins that have logon scripts assigned
+    $AdminLogonScripts = Find-AdminLogonScripts -AdminUsers $AdminUsers -Credential $Credential
+} else {
+    $AdminUsers = $AdminGroups | ForEach-Object { (Get-DomainGroupMember -Domain (Get-Domain).Name -Identity $_ -Recurse | Where-Object {$_.MemberObjectClass -eq 'user'})} | Sort-Object -Property MemberName -Unique
+    $AdminUsers | ForEach-Object { $SafeUsers = $SafeUsers + '|' + $_.MemberName }
+
+    # Get a list of all logon scripts
+    $LogonScripts = Get-LogonScripts
+
+    # Get a list of all GPO logon scripts
+    $GPOLogonScripts = Get-GPOLogonScripts
+
+    if ($LogonScripts) {
+        # Find logon scripts (.bat, .vbs, .cmd, .ps1, .kix) that contain unc paths (e.g. \\srv01\fileshare1)
+        $UNCScripts = Find-UNCScripts -LogonScripts $LogonScripts
+
+        # Find mapped drives (e.g. \\srv01\fileshare1, \\srv02\fileshare2\accounting)
+        $MappedDrives = Find-MappedDrives -LogonScripts $LogonScripts
+
+        # Find nonexistent shares
+        $NonExistentSharesScripts = Find-NonexistentShares -LogonScripts $LogonScripts -AdminUsers $AdminUsers
+        $NonExistentShares = $NonExistentSharesScripts | Where-Object {$_.Exploitable -eq 'Potentially'} | Sort-Object -Property Share -Unique
+
+        # Find unsafe permissions on logon scripts
+        $UnsafeLogonScripts = Find-UnsafeLogonScriptPermissions -LogonScripts $LogonScripts -SafeUsersList $SafeUsers
+
+        # Find credentials in logon scripts
+        $Credentials = Find-LogonScriptCredentials -LogonScripts $LogonScripts
+    } else {
+        Write-Host "[i] No logon scripts found!`n" -ForegroundColor Cyan
+    }
+
+    if ($UNCScripts) {
+        # Find unsafe permissions for unc files found in logon scripts
+        $UnsafeUNCPermissions = Find-UnsafeUNCPermissions -UNCScripts $UNCScripts -SafeUsersList $SafeUsers
+    } else {
+        Write-Host "[i] No UNC files found!`n" -ForegroundColor Cyan
+    }
+    
+    if ($MappedDrives) {
+        # Find unsafe permissions for unc paths found in logon scripts
+        $UnsafeMappedDrives = Find-UnsafeUNCPermissions -UNCScripts $MappedDrives -SafeUsersList $SafeUsers
+    } else {
+        Write-Host "[i] No mapped drives found!`n" -ForegroundColor Cyan
+    }
+
+    # Find unsafe NETLOGON & SYSVOL share permissions
+    $NetlogonSysvol = Get-NetlogonSysvol
+    $UnsafeNetlogonSysvol = Find-UnsafeUNCPermissions -UNCScripts $NetlogonSysvol -SafeUsersList $SafeUsers
+
+    if ($GPOLogonScripts) {
+        # Find unsafe permissions on GPO logon scripts
+        $UnsafeGPOLogonScripts = Find-UnsafeGPOLogonScriptPermissions -GPOLogonScripts $GPOLogonScripts -SafeUsersList $SafeUsers
+    } else {
+        Write-Host "[i] No GPO logon scripts found!`n" -ForegroundColor Cyan
+    }
+
+    # Find admins that have logon scripts assigned
+    $AdminLogonScripts = Find-AdminLogonScripts -AdminUsers $AdminUsers
 }
 
 if ($NonExistentShares) {
@@ -1573,34 +1776,6 @@ if ($NonExistentShares) {
 } else {
     Write-Host "[i] No non-existent shares found!`n" -ForegroundColor Cyan
 }
-
-if ($UNCScripts) {
-    # Find unsafe permissions for unc files found in logon scripts
-    $UnsafeUNCPermissions = Find-UnsafeUNCPermissions -UNCScripts $UNCScripts -SafeUsersList $SafeUsers
-} else {
-    Write-Host "[i] No UNC files found!`n" -ForegroundColor Cyan
-}
-
-if ($MappedDrives) {
-    # Find unsafe permissions for unc paths found in logon scripts
-    $UnsafeMappedDrives = Find-UnsafeUNCPermissions -UNCScripts $MappedDrives -SafeUsersList $SafeUsers
-} else {
-    Write-Host "[i] No mapped drives found!`n" -ForegroundColor Cyan
-}
-
-# Find unsafe NETLOGON & SYSVOL share permissions
-$NetlogonSysvol = Get-NetlogonSysvol
-$UnsafeNetlogonSysvol = Find-UnsafeUNCPermissions -UNCScripts $NetlogonSysvol -SafeUsersList $SafeUsers
-
-if ($GPOLogonScripts) {
-    # Find unsafe permissions on GPO logon scripts
-    $UnsafeGPOLogonScripts = Find-UnsafeGPOLogonScriptPermissions -GPOLogonScripts $GPOLogonScripts -SafeUsersList $SafeUsers
-} else {
-    Write-Host "[i] No GPO logon scripts found!`n" -ForegroundColor Cyan
-}
-
-# Find admins that have logon scripts assigned
-$AdminLogonScripts = Find-AdminLogonScripts -AdminUsers $AdminUsers
 
 # Show all results
 if ($UnsafeMappedDrives) {Show-Results $UnsafeMappedDrives}
@@ -1653,4 +1828,5 @@ if ($SaveOutput) {
 
     Get-ChildItem -Filter "*.csv" -File
 }
+
 }
