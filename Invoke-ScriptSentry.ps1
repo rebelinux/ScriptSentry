@@ -1179,92 +1179,94 @@ A custom PSObject with LDAP hashtable properties translated.
         $Properties
     )
 
-    $ObjectProperties = @{}
-
-    $Properties.PropertyNames | ForEach-Object {
-        if ($_ -ne 'adspath') {
-            if (($_ -eq 'objectsid') -or ($_ -eq 'sidhistory')) {
-                # convert all listed sids (i.e. if multiple are listed in sidHistory)
-                #$ObjectProperties[$_] = $Properties[$_] | ForEach-Object { (New-Object System.Security.Principal.SecurityIdentifier($_, 0)).Value }
-            }
-            elseif ($_ -eq 'grouptype') {
-                #$ObjectProperties[$_] = $Properties[$_][0] -as $GroupTypeEnum
-            }
-            elseif ($_ -eq 'samaccounttype') {
-                #$ObjectProperties[$_] = $Properties[$_][0] -as $SamAccountTypeEnum
-            }
-            elseif ($_ -eq 'objectguid') {
-                # convert the GUID to a string
-                #$ObjectProperties[$_] = (New-Object Guid (,$Properties[$_][0])).Guid
-            }
-            elseif ($_ -eq 'useraccountcontrol') {
-                #$ObjectProperties[$_] = $Properties[$_][0] -as $UACEnum
-            }
-            elseif ($_ -eq 'ntsecuritydescriptor') {
-                # $ObjectProperties[$_] = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $Properties[$_][0], 0
-                $Descriptor = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $Properties[$_][0], 0
-                if ($Descriptor.Owner) {
-                    $ObjectProperties['Owner'] = $Descriptor.Owner
+    PROCESS {
+        $ObjectProperties = @{}
+    
+        $Properties.PropertyNames | ForEach-Object {
+            if ($_ -ne 'adspath') {
+                if (($_ -eq 'objectsid') -or ($_ -eq 'sidhistory')) {
+                    # convert all listed sids (i.e. if multiple are listed in sidHistory)
+                    #$ObjectProperties[$_] = $Properties[$_] | ForEach-Object { (New-Object System.Security.Principal.SecurityIdentifier($_, 0)).Value }
                 }
-                if ($Descriptor.Group) {
-                    $ObjectProperties['Group'] = $Descriptor.Group
+                elseif ($_ -eq 'grouptype') {
+                    #$ObjectProperties[$_] = $Properties[$_][0] -as $GroupTypeEnum
                 }
-                if ($Descriptor.DiscretionaryAcl) {
-                    $ObjectProperties['DiscretionaryAcl'] = $Descriptor.DiscretionaryAcl
+                elseif ($_ -eq 'samaccounttype') {
+                    #$ObjectProperties[$_] = $Properties[$_][0] -as $SamAccountTypeEnum
                 }
-                if ($Descriptor.SystemAcl) {
-                    $ObjectProperties['SystemAcl'] = $Descriptor.SystemAcl
+                elseif ($_ -eq 'objectguid') {
+                    # convert the GUID to a string
+                    #$ObjectProperties[$_] = (New-Object Guid (,$Properties[$_][0])).Guid
                 }
-            }
-            elseif ($_ -eq 'accountexpires') {
-                if ($Properties[$_][0] -gt [DateTime]::MaxValue.Ticks) {
-                    $ObjectProperties[$_] = "NEVER"
+                elseif ($_ -eq 'useraccountcontrol') {
+                    #$ObjectProperties[$_] = $Properties[$_][0] -as $UACEnum
+                }
+                elseif ($_ -eq 'ntsecuritydescriptor') {
+                    # $ObjectProperties[$_] = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $Properties[$_][0], 0
+                    $Descriptor = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $Properties[$_][0], 0
+                    if ($Descriptor.Owner) {
+                        $ObjectProperties['Owner'] = $Descriptor.Owner
+                    }
+                    if ($Descriptor.Group) {
+                        $ObjectProperties['Group'] = $Descriptor.Group
+                    }
+                    if ($Descriptor.DiscretionaryAcl) {
+                        $ObjectProperties['DiscretionaryAcl'] = $Descriptor.DiscretionaryAcl
+                    }
+                    if ($Descriptor.SystemAcl) {
+                        $ObjectProperties['SystemAcl'] = $Descriptor.SystemAcl
+                    }
+                }
+                elseif ($_ -eq 'accountexpires') {
+                    if ($Properties[$_][0] -gt [DateTime]::MaxValue.Ticks) {
+                        $ObjectProperties[$_] = "NEVER"
+                    }
+                    else {
+                        $ObjectProperties[$_] = [datetime]::fromfiletime($Properties[$_][0])
+                    }
+                }
+                elseif ( ($_ -eq 'lastlogon') -or ($_ -eq 'lastlogontimestamp') -or ($_ -eq 'pwdlastset') -or ($_ -eq 'lastlogoff') -or ($_ -eq 'badPasswordTime') ) {
+                    # convert timestamps
+                    if ($Properties[$_][0] -is [System.MarshalByRefObject]) {
+                        # if we have a System.__ComObject
+                        $Temp = $Properties[$_][0]
+                        [Int32]$High = $Temp.GetType().InvokeMember('HighPart', [System.Reflection.BindingFlags]::GetProperty, $Null, $Temp, $Null)
+                        [Int32]$Low  = $Temp.GetType().InvokeMember('LowPart',  [System.Reflection.BindingFlags]::GetProperty, $Null, $Temp, $Null)
+                        $ObjectProperties[$_] = ([datetime]::FromFileTime([Int64]("0x{0:x8}{1:x8}" -f $High, $Low)))
+                    }
+                    else {
+                        # otherwise just a string
+                        $ObjectProperties[$_] = ([datetime]::FromFileTime(($Properties[$_][0])))
+                    }
+                }
+                elseif ($Properties[$_][0] -is [System.MarshalByRefObject]) {
+                    # try to convert misc com objects
+                    $Prop = $Properties[$_]
+                    try {
+                        $Temp = $Prop[$_][0]
+                        [Int32]$High = $Temp.GetType().InvokeMember('HighPart', [System.Reflection.BindingFlags]::GetProperty, $Null, $Temp, $Null)
+                        [Int32]$Low  = $Temp.GetType().InvokeMember('LowPart',  [System.Reflection.BindingFlags]::GetProperty, $Null, $Temp, $Null)
+                        $ObjectProperties[$_] = [Int64]("0x{0:x8}{1:x8}" -f $High, $Low)
+                    }
+                    catch {
+                        Write-Verbose "[Convert-LDAPProperty] error: $_"
+                        $ObjectProperties[$_] = $Prop[$_]
+                    }
+                }
+                elseif ($Properties[$_].count -eq 1) {
+                    $ObjectProperties[$_] = $Properties[$_][0]
                 }
                 else {
-                    $ObjectProperties[$_] = [datetime]::fromfiletime($Properties[$_][0])
+                    $ObjectProperties[$_] = $Properties[$_]
                 }
-            }
-            elseif ( ($_ -eq 'lastlogon') -or ($_ -eq 'lastlogontimestamp') -or ($_ -eq 'pwdlastset') -or ($_ -eq 'lastlogoff') -or ($_ -eq 'badPasswordTime') ) {
-                # convert timestamps
-                if ($Properties[$_][0] -is [System.MarshalByRefObject]) {
-                    # if we have a System.__ComObject
-                    $Temp = $Properties[$_][0]
-                    [Int32]$High = $Temp.GetType().InvokeMember('HighPart', [System.Reflection.BindingFlags]::GetProperty, $Null, $Temp, $Null)
-                    [Int32]$Low  = $Temp.GetType().InvokeMember('LowPart',  [System.Reflection.BindingFlags]::GetProperty, $Null, $Temp, $Null)
-                    $ObjectProperties[$_] = ([datetime]::FromFileTime([Int64]("0x{0:x8}{1:x8}" -f $High, $Low)))
-                }
-                else {
-                    # otherwise just a string
-                    $ObjectProperties[$_] = ([datetime]::FromFileTime(($Properties[$_][0])))
-                }
-            }
-            elseif ($Properties[$_][0] -is [System.MarshalByRefObject]) {
-                # try to convert misc com objects
-                $Prop = $Properties[$_]
-                try {
-                    $Temp = $Prop[$_][0]
-                    [Int32]$High = $Temp.GetType().InvokeMember('HighPart', [System.Reflection.BindingFlags]::GetProperty, $Null, $Temp, $Null)
-                    [Int32]$Low  = $Temp.GetType().InvokeMember('LowPart',  [System.Reflection.BindingFlags]::GetProperty, $Null, $Temp, $Null)
-                    $ObjectProperties[$_] = [Int64]("0x{0:x8}{1:x8}" -f $High, $Low)
-                }
-                catch {
-                    Write-Verbose "[Convert-LDAPProperty] error: $_"
-                    $ObjectProperties[$_] = $Prop[$_]
-                }
-            }
-            elseif ($Properties[$_].count -eq 1) {
-                $ObjectProperties[$_] = $Properties[$_][0]
-            }
-            else {
-                $ObjectProperties[$_] = $Properties[$_]
             }
         }
-    }
-    try {
-        New-Object -TypeName PSObject -Property $ObjectProperties
-    }
-    catch {
-        Write-Warning "[Convert-LDAPProperty] Error parsing LDAP properties : $_"
+        try {
+            New-Object -TypeName PSObject -Property $ObjectProperties
+        }
+        catch {
+            Write-Warning "[Convert-LDAPProperty] Error parsing LDAP properties : $_"
+        }
     }
 }
 function Find-AdminLogonScripts {
