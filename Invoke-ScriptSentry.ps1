@@ -1279,7 +1279,7 @@ function Find-AdminLogonScripts {
     ) 
     # Enabled user accounts
     Foreach ($Admin in $AdminUsers) {
-        $AdminLogonScripts = Get-DomainUser -Identity $Admin.MemberName | Where-Object { $_.scriptPath -ne $null}
+        $AdminLogonScripts = Get-DomainUser -Identity $Admin.MemberName | Where-Object { $null -ne $_.scriptPath }
         
         # "`n[!] Admins found with logon scripts"
         $AdminLogonScripts | Foreach-object {
